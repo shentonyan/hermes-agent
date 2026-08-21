@@ -155,7 +155,7 @@ def _handle_spotify_playback(args: dict, **kw) -> str:
         if action == "recently_played":
             after = args.get("after")
             before = args.get("before")
-            if after and before:
+            if after is not None and before is not None:
                 return tool_error("Provide only one of 'after' or 'before'")
             return tool_result(client.get_recently_played(
                 limit=_coerce_limit(args.get("limit"), default=20),
@@ -310,17 +310,30 @@ def _handle_spotify_library(args: dict, **kw) -> str:
             return tool_result(client.get_saved_albums(limit=limit, offset=offset, market=market))
         if action == "save":
             uris = normalize_spotify_uris(_as_list(args.get("uris") or args.get("items")), item_type)
+            if len(uris) > SPOTIFY_LIBRARY_MUTATION_MAX_URIS:
+                return tool_error(
+                    "Spotify library mutations support at most "
+                    f"{SPOTIFY_LIBRARY_MUTATION_MAX_URIS} items per request; split the request into batches."
+                )
             return tool_result(client.save_library_items(uris=uris))
         if action == "remove":
             ids = [normalize_spotify_id(item, item_type) for item in _as_list(args.get("ids") or args.get("items"))]
             if not ids:
                 return tool_error("ids/items is required for action='remove'")
+            if len(ids) > SPOTIFY_LIBRARY_MUTATION_MAX_URIS:
+                return tool_error(
+                    "Spotify library mutations support at most "
+                    f"{SPOTIFY_LIBRARY_MUTATION_MAX_URIS} items per request; split the request into batches."
+                )
             if kind == "tracks":
                 return tool_result(client.remove_saved_tracks(track_ids=ids))
             return tool_result(client.remove_saved_albums(album_ids=ids))
         return tool_error(f"Unknown spotify_library action: {action}")
     except Exception as exc:
         return _spotify_tool_error(exc)
+
+
+SPOTIFY_LIBRARY_MUTATION_MAX_URIS = 40
 
 
 COMMON_STRING = {"type": "string"}

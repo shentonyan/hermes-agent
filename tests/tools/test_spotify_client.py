@@ -297,3 +297,124 @@ def test_spotify_playback_recently_played_action(monkeypatch: pytest.MonkeyPatch
     payload = json.loads(spotify_tool._handle_spotify_playback({"action": "recently_played", "limit": 5}))
     assert seen and seen[0]["limit"] == 5
     assert isinstance(payload, dict)
+
+
+class _LibraryMutationStub:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def save_library_items(self, **kwargs):
+        self.calls.append(("save_library_items", kwargs))
+        return {"success": True}
+
+    def remove_saved_tracks(self, **kwargs):
+        self.calls.append(("remove_saved_tracks", kwargs))
+        return {"success": True}
+
+    def remove_saved_albums(self, **kwargs):
+        self.calls.append(("remove_saved_albums", kwargs))
+        return {"success": True}
+
+
+@pytest.mark.parametrize(
+    ("kind", "action", "argument_name", "method_name"),
+    [
+        ("tracks", "save", "uris", "save_library_items"),
+        ("albums", "save", "uris", "save_library_items"),
+        ("tracks", "remove", "ids", "remove_saved_tracks"),
+        ("albums", "remove", "ids", "remove_saved_albums"),
+    ],
+)
+def test_spotify_library_mutations_reject_more_than_40_items(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    action: str,
+    argument_name: str,
+    method_name: str,
+) -> None:
+    client = _LibraryMutationStub()
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: client)
+    item_type = "track" if kind == "tracks" else "album"
+    values = [f"spotify:{item_type}:item-{index}" for index in range(41)]
+
+    payload = json.loads(
+        spotify_tool._handle_spotify_library(
+            {"kind": kind, "action": action, argument_name: values}
+        )
+    )
+
+    assert "at most 40 items" in (payload.get("error") or "")
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "action", "argument_name", "method_name"),
+    [
+        ("tracks", "save", "uris", "save_library_items"),
+        ("albums", "save", "uris", "save_library_items"),
+        ("tracks", "remove", "ids", "remove_saved_tracks"),
+        ("albums", "remove", "ids", "remove_saved_albums"),
+    ],
+)
+def test_spotify_library_mutations_allow_exactly_40_items(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    action: str,
+    argument_name: str,
+    method_name: str,
+) -> None:
+    client = _LibraryMutationStub()
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: client)
+    item_type = "track" if kind == "tracks" else "album"
+    values = [f"spotify:{item_type}:item-{index}" for index in range(40)]
+
+    payload = json.loads(
+        spotify_tool._handle_spotify_library(
+            {"kind": kind, "action": action, argument_name: values}
+        )
+    )
+
+    assert payload.get("success") is True
+    assert len(client.calls) == 1
+    assert client.calls[0][0] == method_name
+    assert len(next(iter(client.calls[0][1].values()))) == 40
+
+
+def test_spotify_recently_played_rejects_zero_after_with_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _UnexpectedRecentClient:
+        def get_recently_played(self, **kwargs):
+            raise AssertionError("invalid cursor combination should not call the client")
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", _UnexpectedRecentClient)
+
+    payload = json.loads(
+        spotify_tool._handle_spotify_playback(
+            {"action": "recently_played", "after": 0, "before": 1700000000000}
+        )
+    )
+
+    assert "only one of 'after' or 'before'" in (payload.get("error") or "")
+
+
+def test_spotify_recently_played_forwards_zero_after_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict] = []
+
+    class _RecentStub:
+        def get_recently_played(self, **kwargs):
+            seen.append(kwargs)
+            return {"items": []}
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", _RecentStub)
+
+    payload = json.loads(
+        spotify_tool._handle_spotify_playback(
+            {"action": "recently_played", "after": 0}
+        )
+    )
+
+    assert payload == {"items": []}
+    assert seen == [{"limit": 20, "after": 0, "before": None}]
